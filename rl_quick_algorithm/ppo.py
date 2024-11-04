@@ -1,4 +1,3 @@
-import argparse
 import torch 
 import numpy as np
 import torch.nn as nn
@@ -41,11 +40,11 @@ def create_config_dict():
     """
 
     config = {
-        "num_envs": 1,
-        "num_minibatches": 20,
+        "num_envs": 100,
+        "num_minibatches": 100,
         "torch_deterministic": True,
         "seed": 1,
-        "total_timesteps": 100000000,
+        "total_timesteps": 1000000,
         "learning_rate": 2.5e-4,
         "anneal_lr": True,
         "gamma": 1.0,
@@ -60,8 +59,7 @@ def create_config_dict():
         "max_grad_norm": 0.5,
         "global_begin": 0,
         "target_kl": None,
-        "num_steps": 100,
-        "num_envs": 1,
+        "num_steps": 10,
     }
 
     return config
@@ -93,7 +91,10 @@ def init(module, weight_init, bias_init, gain=1):
     return module
 
 def check(input):
-    output = torch.from_numpy(input) if type(input) == np.ndarray else input
+    output = torch.from_numpy(input).float() if type(input) == np.ndarray else input
+    # # 检查输入是否为一维向量
+    # if isinstance(output, torch.Tensor) and output.dim() == 1:
+    #     output = output.unsqueeze(0)  # 将一维向量转换为二维张量 (1, n)
     return output
 
 class Categorical(torch.nn.Module):
@@ -169,8 +170,8 @@ class critic(nn.Module):
 
 class Agent(object):
     def __init__(self, envs, config, device):
-        state_dim = envs.single_observation_space.shape[0]
-        action_dim = envs.single_action_space.n
+        state_dim = envs.observation_space.shape[0]
+        action_dim = envs.action_space.n
         self.critic_network = critic(state_dim,device).to(device)
         self.actor_network = actor(state_dim,action_dim,device).to(device)
         self.actor_optimizer = torch.optim.Adam(self.actor_network.parameters(),
@@ -213,11 +214,11 @@ class replay_buffer(object):
         self.gamma = config['gamma']
         self.gae_lambda = config['gae_lambda']
         self.agent_num = agent_num
-        self.obs = np.zeros((self.num_steps,self.num_envs,self.agent_num,)+env.single_observation_space.shape, dtype=np.float32)
+        self.obs = np.zeros((self.num_steps,self.num_envs,self.agent_num,)+env.observation_space.shape, dtype=np.float32)
         self.value_pred = np.zeros((self.num_steps,self.num_envs,self.agent_num), dtype=np.float32)
         self.returns = np.zeros_like(self.value_pred)
         
-        self.actions = np.zeros((self.num_steps,self.num_envs,self.agent_num)+env.single_action_space.shape, dtype=np.int32)
+        self.actions = np.zeros((self.num_steps,self.num_envs,self.agent_num)+env.action_space.shape, dtype=np.int32)
         self.action_log_probs = np.zeros((self.num_steps,self.num_envs,self.agent_num), dtype=np.float32)
         self.rewards = np.zeros((self.num_steps,self.num_envs,self.agent_num), dtype=np.float32)
         self.step = 0
@@ -298,60 +299,165 @@ class replay_buffer(object):
             base_ret = [obs_batch, old_action_log_probs_batch, actions_batch, advantages_batch, returns_batch, value_preds_batch]
             yield base_ret
 
-class runner():
-    def __init__(self, env, exp_name="ppo", result_path="exp", algo_config=create_config_dict(), env_config={}) -> None:
-        exp_path = f"{result_path}/{time.strftime('%Y-%m-%d_%H_%M_%S',time.localtime())}_{exp_name}/"
-        if not os.path.exists(exp_path):
-            os.makedirs(exp_path)
+def run(env, exp_name="ppo", result_path="exp", algo_config=create_config_dict(), env_config={}):
+    exp_path = f"{result_path}/{time.strftime('%Y-%m-%d_%H_%M_%S',time.localtime())}_{exp_name}/"
+    algo_config['batch_size'] = int(algo_config['num_envs'] * algo_config['num_steps'])
+    if not os.path.exists(exp_path):
+        os.makedirs(exp_path)
 
-        config = {'algorithm':vars(algo_config),'env':env_config}
-        with open(exp_path+'config.yml',mode='w') as file:
-            yaml.dump(config,file)
+    config = {'algorithm':algo_config,'env':env_config}
+    with open(exp_path+'config.yml',mode='w') as file:
+        yaml.dump(config,file)
 
-        self.writer = SummaryWriter(exp_path+'runs')
-        self.writer.add_text(
-            "model_hyperparameters",
-            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in algo_config.items()])),
-        )
-        self.writer.add_text(
-            "env_parameters",
-            "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in env_config.items()])),
-        )
+    writer = SummaryWriter(exp_path+'runs')
+    writer.add_text(
+        "model_hyperparameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in algo_config.items()])),
+    )
+    writer.add_text(
+        "env_parameters",
+        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in env_config.items()])),
+    )
 
-        self.logger = logging.getLogger('exp')
-        self.logger.setLevel(logging.INFO)
-        fh = logging.FileHandler(exp_path+'log.txt',encoding='utf-8')
-        sh = logging.StreamHandler()
-        fh.setLevel(logging.DEBUG)
-        sh.setLevel(logging.DEBUG)
-        ffmt = logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
-        fh.setFormatter(ffmt)
-        sh.setFormatter(ffmt)
-        self.logger.addHandler(fh)
-        self.logger.addHandler(sh)
+    logger = logging.getLogger('exp')
+    logger.setLevel(logging.INFO)
+    fh = logging.FileHandler(exp_path+'log.txt',encoding='utf-8')
+    sh = logging.StreamHandler()
+    fh.setLevel(logging.DEBUG)
+    sh.setLevel(logging.DEBUG)
+    ffmt = logging.Formatter(fmt='%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s')
+    fh.setFormatter(ffmt)
+    sh.setFormatter(ffmt)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
 
-        modelpath = exp_path+'model/'
-        if not os.path.exists(modelpath):
-            os.mkdir(modelpath)
+    modelpath = exp_path+'model/'
+    if not os.path.exists(modelpath):
+        os.mkdir(modelpath)
 
-        np.random.seed(algo_config['seed'])
-        torch.manual_seed(algo_config['seed'])
-        torch.backends.cudnn.deterministic = algo_config['torch_deterministic']
+    np.random.seed(algo_config['seed'])
+    torch.manual_seed(algo_config['seed'])
+    torch.backends.cudnn.deterministic = algo_config['torch_deterministic']
 
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-        self.agent = Agent(env, algo_config, self.device)
+    agent = Agent(env, algo_config, device)
 
-        self.buffer = replay_buffer(algo_config, env, 1)
+    buffer = replay_buffer(algo_config, env, 1)
+    
+    global_step = 0
+    start_time = time.time()
+    temp_obs = env.reset()
+    next_obs = temp_obs
+    # next_done = np.zeros(args.num_envs*env_config['agent_num'])
+    num_updates = algo_config['total_timesteps'] // algo_config['batch_size']
 
-        self.env = env
-        self.algo_config = algo_config
-        self.env_config = env_config
+    for update in range(0, num_updates + 1):
 
-    def run(self):
-        global_step = 0
-        start_time = time.time()
-        temp_obs, _ = self.env.reset()
-        next_obs = temp_obs
-        # next_done = np.zeros(args.num_envs*env_config['agent_num'])
-        num_updates = self.total_timesteps // args.batch_size
+        if algo_config['anneal_lr']:
+            frac = 1.0 - (update - 1.0) / (num_updates)
+            lrnow = frac * algo_config['learning_rate']
+            agent.actor_optimizer.param_groups[0]["lr"] = lrnow
+            agent.critic_optimizer.param_groups[0]['lr'] = lrnow
+
+        for step in range(0, algo_config['num_steps']):
+            global_step += 1 * algo_config['num_envs']
+            obs = next_obs
+
+            # ALGO LOGIC: action logic
+            actions = np.zeros((algo_config['num_envs'],),dtype=np.int64)
+            logprobs = np.zeros((algo_config['num_envs'],1),dtype=np.float32)
+            value_preds = np.zeros((algo_config['num_envs'],1),dtype=np.float32)
+            with torch.no_grad():
+                agent.prep_rollout()
+                action, logprob= agent.get_action(obs)
+                value_pred = agent.get_value(obs)
+            logprobs = logprob.cpu().numpy()
+            actions = action.cpu().numpy().ravel()
+            value_preds = value_pred.cpu().numpy()
+
+            # TRY NOT TO MODIFY: execute the game and log data.
+            next_obs, rewards, done, info = env.step(actions)
+            buffer.insert(obs,actions,logprobs,value_preds,rewards)
+            obs = next_obs
+        
+        next_obs = env.reset()
+
+
+        # 计算return及advantage
+        value_preds = np.zeros((algo_config['num_envs'],1),dtype=np.float32)
+
+        with torch.no_grad():
+            agent.prep_rollout()
+            value_pred = agent.get_value(next_obs)
+            value_preds = value_pred.cpu().numpy()
+        advantages = buffer.compute_returns(value_preds)
+
+        writer.add_scalar("charts/rew",np.sum(buffer.rewards)/algo_config['num_envs'],global_step)
+        # 优势归一化，并不确定是不是一定需要！！！！
+        advantages_copy = advantages.copy()
+        # advantages_copy[buffer.active_masks[:-1] == 0.0] = np.nan
+        mean_advantages = np.nanmean(advantages_copy)
+        std_advantages = np.nanstd(advantages_copy)
+        advantages = (advantages - mean_advantages) / (std_advantages + 1e-5)
+
+        for epoch in range(algo_config['update_epochs']):
+            agent.prep_training()
+            data_generator = buffer.feed_forward_generator(advantages, 0, num_mini_batch=algo_config['num_minibatches'])
+    
+            for sample in data_generator:
+                obs_batch, old_action_log_probs_batch, \
+                actions_batch, advatages_batch, returns_batch, \
+                value_preds_batch = sample
+
+                old_action_log_probs_batch = check(old_action_log_probs_batch).to(device).unsqueeze(1)
+                advatages_batch = check(advatages_batch).to(device)
+                returns_batch = check(returns_batch).to(device).unsqueeze(1)
+                value_preds_batch = check(value_preds_batch).to(device).unsqueeze(1)
+                value_real, action_log_probs, dist_entropy = agent.evaluate_action(obs_batch, actions_batch)
+                ratio = torch.exp(action_log_probs - old_action_log_probs_batch)
+                pg_loss1 = advatages_batch * ratio
+                pg_loss2 = advatages_batch * torch.clamp(ratio, 1.0 - algo_config['clip_coef'], 1.0 + algo_config['clip_coef'])
+                pg_loss = - torch.min(pg_loss1, pg_loss2).mean()
+                actor_loss = pg_loss - dist_entropy * algo_config['ent_coef']
+
+                agent.actor_optimizer.zero_grad()
+                actor_loss.backward()
+                nn.utils.clip_grad_norm_(agent.actor_network.parameters(), algo_config['max_grad_norm'])
+                agent.actor_optimizer.step()
+
+                # 更新 critic 网络 使用的变量有 returns_batch 计算好的， value_real 带有梯度的  value_preds_batch 记录下来的不带梯度的
+                v_loss_unclipped = (value_real - returns_batch) ** 2
+                v_clipped = value_preds_batch + torch.clamp(value_real - value_preds_batch, -algo_config['clip_coef'], algo_config['clip_coef'])
+                v_loss_clipped = (v_clipped - returns_batch) ** 2
+                v_loss = torch.max(v_loss_unclipped, v_loss_clipped)
+                v_loss = torch.mean(v_loss)
+                agent.critic_optimizer.zero_grad()
+                v_loss.backward()
+                nn.utils.clip_grad_norm_(agent.critic_network.parameters(), algo_config['max_grad_norm'])
+                agent.critic_optimizer.step()
+
+            writer.add_scalar("charts/learning_rate", agent.actor_optimizer.param_groups[0]["lr"], global_step)
+            writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
+            writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
+            writer.add_scalar("losses/entropy", dist_entropy.item(), global_step)
+            writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+            print(f"SPS={int(global_step / (time.time() - start_time))}")
+
+        if (update % (num_updates/10) == 0) or (update==num_updates):
+            torch.save(agent.actor_network.state_dict(),modelpath+'actor_model.pth')
+            torch.save(agent.critic_network.state_dict(),modelpath+'critic_model.pth')
+    writer.close()
+    endtime = time.time()
+    return endtime-start_time
+
+# Example usage
+if __name__ == "__main__":
+    from env.number import GuessNumberEnv
+    env = GuessNumberEnv(max_number=10, max_steps=10)
+    
+    time = run(env)
+    
+    print(f'total time = {time}')
+
+    env.close()

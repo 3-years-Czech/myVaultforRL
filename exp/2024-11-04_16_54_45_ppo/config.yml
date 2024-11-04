@@ -1,0 +1,23 @@
+algorithm:
+  anneal_lr: true
+  batch_size: 1000
+  clip_coef: 0.1
+  clip_vloss: true
+  ent_coef: 0.01
+  gae_lambda: 0.95
+  gamma: 1.0
+  global_begin: 0
+  learning_rate: 0.00025
+  load_model: false
+  max_grad_norm: 0.5
+  norm_adv: true
+  num_envs: 100
+  num_minibatches: 100
+  num_steps: 10
+  seed: 1
+  target_kl: null
+  torch_deterministic: true
+  total_timesteps: 1000000
+  update_epochs: 10
+  vf_coef: 0.5
+env: {}

@@ -212,18 +212,6 @@ class Agent(object):
     
     def get_value(self, x):
         return self.critic_network(x)
-
-    def update_suc_weitgh(self,accum_overrun):
-        self.lambda_weight2 = self.lambda_weight2 + (accum_overrun+self.outage_prob_threshold-1.0)*10.0
-        if self.lambda_weight2<0:
-            self.lambda_weight2=0
-        return self.lambda_weight2
-    
-    def update_aoi_weitgh(self,accum_overrun):
-        self.lambda_weight1 = self.lambda_weight1 + (accum_overrun+self.aoi_prob_threshold-1.0) * 10.0
-        if self.lambda_weight1<0:
-            self.lambda_weight1=0
-        return self.lambda_weight1
     
     def get_probs(self,x):
         return self.actor_network.get_probs(x)
